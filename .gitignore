@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Claude Code context
+CLAUDE.md
+
 # Generated experiment output
 results/*.csv
 plots/*.png
