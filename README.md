@@ -185,6 +185,16 @@ protocol, payload_bytes, buffer_bytes, condition, throughput_mbps, avg_latency_m
 Real network conditions are emulated using **dummynet** (`dnctl` + `pfctl`), which is
 built into macOS. All conditions are applied to the loopback interface (`lo0`).
 
+### Why dummynet instead of tc/netem?
+
+The original project proposal referenced `tc`/`netem` for network emulation, which is
+the standard tool on Linux. This project is developed on **macOS**, where `tc` is not
+available — macOS is BSD-based, not Linux. `dummynet` is the macOS/BSD equivalent and
+ships with the OS, requiring no additional installs. It supports the same capabilities
+needed here: propagation delay, bandwidth limits, queue depth (for bufferbloat), and
+packet loss rate — all configurable per interface. The results are directly comparable
+to what `tc`/`netem` would produce in a Linux environment.
+
 > **Important:** `dummynet` commands require `sudo`.
 
 ### Apply a condition manually
