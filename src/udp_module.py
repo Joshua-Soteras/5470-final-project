@@ -2,16 +2,21 @@
 UDP Measurement Module
 ----------------------
 Runs a UDP sender/receiver pair on localhost (loopback, 127.0.0.1).
-Measures three performance metrics:
-  - Throughput  : how many megabits per second arrived at the receiver
-  - Packet loss : what percentage of sent datagrams never arrived
-  - Jitter      : how irregular the inter-arrival gaps were (RFC 3550 definition)
+Measures four performance metrics:
+  - Throughput    : how many megabits per second arrived at the receiver
+  - Packet loss   : what percentage of sent datagrams never arrived
+  - Jitter        : how irregular the inter-arrival gaps were (RFC 3550 definition)
+  - One-way delay : average time for a datagram to travel from sender to receiver (ms)
 
 Key difference from TCP: UDP is connectionless and has no delivery guarantee.
 There is no retransmission, no ordering, and no flow control built in.
 That is why we manually stamp every datagram with a sequence number and
-send-timestamp — so the receiver can detect gaps (loss) and measure how
-consistently datagrams are arriving (jitter).
+send-timestamp — so the receiver can detect gaps (loss), measure how
+consistently datagrams are arriving (jitter), and compute one-way delay.
+
+One-way delay (OWD) is valid here because sender and receiver are on the same
+machine and share the same monotonic clock (time.perf_counter_ns()). It would
+NOT be valid across separate machines without clock synchronisation.
 
 Usage (via uv):
     uv run python src/udp_module.py --payload 1024 --buffer 65536 \
@@ -65,6 +70,7 @@ CSV_HEADER = [
     "throughput_mbps", # measured goodput in megabits per second
     "loss_rate_pct",   # percentage of datagrams that never arrived
     "jitter_ms",       # mean absolute deviation of inter-arrival gaps (ms)
+    "avg_owd_ms",      # mean one-way delay from sender to receiver (ms)
     "run_index",       # which repetition this is (1, 2, or 3)
 ]
 
@@ -188,6 +194,7 @@ def _udp_receiver(host: str, port: int, buffer_size: int,
             'elapsed_s'     — float, wall time from first to last datagram
             'loss_rate_pct' — float, percentage of lost datagrams
             'jitter_ms'     — float, jitter computed by compute_jitter()
+            'avg_owd_ms'    — float, mean one-way delay (arrival_ns - send_ns) / 1e6
             'seq_nums'      — list[int], sorted sequence numbers received
     """
     # AF_INET = IPv4 address family; SOCK_DGRAM = UDP (unreliable datagrams).
@@ -212,7 +219,8 @@ def _udp_receiver(host: str, port: int, buffer_size: int,
 
     # Accumulators filled during the receive loop.
     seq_nums: list[int] = []          # sequence numbers of received datagrams
-    arrival_times_ns: list[int] = []  # nanosecond timestamps of each arrival
+    arrival_times_ns: list[int] = []  # nanosecond arrival timestamps (from this machine's clock)
+    send_times_ns: list[int] = []     # nanosecond send timestamps (unpacked from datagram header)
     total_bytes = 0                   # sum of datagram sizes received
     first_time_ns: int | None = None  # timestamp of the very first datagram
     last_time_ns: int | None = None   # timestamp of the most recent datagram
@@ -234,10 +242,13 @@ def _udp_receiver(host: str, port: int, buffer_size: int,
                 # struct.unpack_from() reads HEADER_FMT fields from the start
                 # of `data` without requiring us to slice the bytes manually.
                 # Returns a tuple: (seq_num, send_ns).
-                seq_num, _ = struct.unpack_from(HEADER_FMT, data)
+                # send_ns is the clock value recorded by the sender just before
+                # calling sendto() — used to compute one-way delay below.
+                seq_num, send_ns = struct.unpack_from(HEADER_FMT, data)
 
                 seq_nums.append(seq_num)
                 arrival_times_ns.append(now_ns)
+                send_times_ns.append(send_ns)
                 total_bytes += len(data)
 
                 # Track the wall-clock span from first to last datagram.
@@ -263,6 +274,7 @@ def _udp_receiver(host: str, port: int, buffer_size: int,
         results["elapsed_s"]     = 0.0
         results["loss_rate_pct"] = 100.0
         results["jitter_ms"]     = 0.0
+        results["avg_owd_ms"]    = 0.0
         results["seq_nums"]      = []
         return
 
@@ -273,11 +285,21 @@ def _udp_receiver(host: str, port: int, buffer_size: int,
     # Clamp to 0 in case more arrived than expected (shouldn't happen on loopback).
     loss_rate_pct = max(0.0, (n_expected - received) / n_expected * 100.0)
 
+    # One-way delay: arrival clock minus send clock, both from time.perf_counter_ns()
+    # on the same machine. Valid only on loopback — cross-machine use would require
+    # synchronised clocks (PTP/NTP). Convert ns → ms by dividing by 1e6.
+    owd_samples_ms = [
+        (arrival_times_ns[i] - send_times_ns[i]) / 1e6
+        for i in range(received)
+    ]
+    avg_owd_ms = statistics.mean(owd_samples_ms) if owd_samples_ms else 0.0
+
     results["received"]      = received
     results["total_bytes"]   = total_bytes
     results["elapsed_s"]     = elapsed_s
     results["loss_rate_pct"] = loss_rate_pct
     results["jitter_ms"]     = compute_jitter(arrival_times_ns)
+    results["avg_owd_ms"]    = avg_owd_ms
     results["seq_nums"]      = sorted(seq_nums)
 
 # ─── Sender ───────────────────────────────────────────────────────────────────
@@ -333,9 +355,10 @@ def run_udp_sender(host: str, port: int, payload_size: int,
         for seq_num in range(n_messages):
             # Pack the header: struct.pack(fmt, *values) returns a bytes object.
             # HEADER_FMT = ">QQ": big-endian, two uint64 fields.
-            # seq_num   — receiver uses this to detect gaps/reordering.
-            # perf_counter_ns() — receiver could compute one-way delay if clocks
-            #                     were synchronized; here it's mainly for jitter.
+            # seq_num          — receiver uses this to detect gaps/reordering.
+            # perf_counter_ns() — receiver subtracts this from its own arrival
+            #                     timestamp to compute one-way delay (valid on
+            #                     loopback where both sides share the same clock).
             header = struct.pack(HEADER_FMT, seq_num, time.perf_counter_ns())
 
             # sendto() transmits the datagram. Unlike TCP's send(), a single
@@ -353,7 +376,7 @@ def run_udp_sender(host: str, port: int, payload_size: int,
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 def run_udp_experiment(payload_size: int, buffer_size: int, n_messages: int,
-                       send_rate_pps: int, label: str, run_index: int) -> tuple[float, float, float]:
+                       send_rate_pps: int, label: str, run_index: int) -> tuple[float, float, float, float]:
     """
     Top-level function that coordinates the receiver thread and sender,
     then collects, saves, and returns the measured metrics.
@@ -384,8 +407,8 @@ def run_udp_experiment(payload_size: int, buffer_size: int, n_messages: int,
 
     Returns
     -------
-    tuple[float, float, float]
-        (throughput_mbps, loss_rate_pct, jitter_ms)
+    tuple[float, float, float, float]
+        (throughput_mbps, loss_rate_pct, jitter_ms, avg_owd_ms)
     """
     # Shared dict passed to the receiver thread by reference.
     # Python dicts are mutable, so the thread can write into it and the
@@ -429,6 +452,7 @@ def run_udp_experiment(payload_size: int, buffer_size: int, n_messages: int,
 
     loss_rate_pct = results.get("loss_rate_pct", 100.0)
     jitter_ms     = results.get("jitter_ms", 0.0)
+    avg_owd_ms    = results.get("avg_owd_ms", 0.0)
 
     # ── Save to CSV ─────────────────────────────────────────────────────────
     # Pass RESULTS_PATH explicitly so tests can patch udp_module.RESULTS_PATH
@@ -443,10 +467,11 @@ def run_udp_experiment(payload_size: int, buffer_size: int, n_messages: int,
         "throughput_mbps": round(throughput_mbps, 4),
         "loss_rate_pct":   round(loss_rate_pct, 4),
         "jitter_ms":       round(jitter_ms, 4),
+        "avg_owd_ms":      round(avg_owd_ms, 4),
         "run_index":       run_index,
     }, filepath=RESULTS_PATH)
 
-    return throughput_mbps, loss_rate_pct, jitter_ms
+    return throughput_mbps, loss_rate_pct, jitter_ms, avg_owd_ms
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
@@ -476,7 +501,7 @@ def main():
 
     args = parser.parse_args()
 
-    throughput, loss, jitter = run_udp_experiment(
+    throughput, loss, jitter, owd = run_udp_experiment(
         payload_size  = args.payload,
         buffer_size   = args.buffer,
         n_messages    = args.messages,
@@ -489,7 +514,7 @@ def main():
     print(
         f"UDP | {args.label} | payload={args.payload}B | "
         f"throughput={throughput:.2f} Mbps | "
-        f"loss={loss:.2f}% | jitter={jitter:.2f}ms"
+        f"loss={loss:.2f}% | jitter={jitter:.2f}ms | owd={owd:.3f}ms"
     )
 
 

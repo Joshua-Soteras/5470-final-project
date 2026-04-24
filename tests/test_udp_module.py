@@ -370,7 +370,7 @@ def test_experiment_basic_loopback():
     udp_module.RESULTS_PATH = tmp_path
 
     try:
-        throughput_mbps, loss_rate_pct, jitter_ms = run_udp_experiment(
+        throughput_mbps, loss_rate_pct, jitter_ms, avg_owd_ms = run_udp_experiment(
             payload_size  = 512,    # 512-byte datagrams — well above HEADER_SIZE
             buffer_size   = 65536,  # 64 KB socket buffers — generous for 50 packets
             n_messages    = 50,     # small count so the test finishes in ~2.5 s
@@ -397,6 +397,13 @@ def test_experiment_basic_loopback():
         # Jitter must be a non-negative number. We don't assert a tight upper
         # bound because macOS scheduler resolution varies; we just check sanity.
         assert jitter_ms >= 0.0, f"Jitter must be non-negative, got {jitter_ms}"
+
+        # ── One-way delay ────────────────────────────────────────────────────
+        # OWD is arrival_ns - send_ns on the same machine, so it should be a
+        # small positive number (microseconds to low milliseconds on loopback).
+        # We just assert it is non-negative and below 100 ms as a sanity check.
+        assert avg_owd_ms >= 0.0, f"OWD must be non-negative, got {avg_owd_ms}"
+        assert avg_owd_ms < 100.0, f"OWD suspiciously large on loopback: {avg_owd_ms:.2f}ms"
 
         # ── CSV output ───────────────────────────────────────────────────────
         # Verify the experiment actually wrote one row to the CSV.
