@@ -980,6 +980,33 @@ comparison tops out at 16384B for UDP.
 
 ---
 
+### sudo credential expiry kills script between dummynet conditions
+
+**Encountered during:** `scripts/04_emulated_conditions.sh` — script consistently
+stopped after `high_latency` and never reached `bufferbloat` or `lossy`.
+
+**Root cause:** The `high_latency` condition runs 200 TCP ping-pong messages at
+~100ms RTT across 5 payload sizes × 3 runs. That takes roughly 6 minutes. macOS
+caches sudo credentials for 5 minutes by default. By the time the `high_latency`
+loop finished and `teardown()` called `sudo dnctl -q flush`, the credential had
+expired. In a non-interactive script context, `sudo` exits with a non-zero code
+rather than prompting for a password — and `set -e` at the top of the script
+treated that as a fatal error and killed the process.
+
+This happened silently: the script exited without printing any error, making it
+look like it completed successfully after the first condition.
+
+**Fix:** Added `sudo -v` calls to refresh the credential cache at three points:
+once at script start (to prompt upfront), once at the top of each condition's
+loop iteration, and once inside `teardown()` itself. `sudo -v` does nothing if
+the credential is still valid, and re-authenticates silently if it has expired.
+
+**Impact on results:** The first four runs of script 04 each produced only
+`high_latency` rows (15 per run = 60 total) before stopping. `bufferbloat` and
+`lossy` data was collected on the fifth run after the fix was applied.
+
+---
+
 ## Troubleshooting
 
 ### "Address already in use" when running an experiment
