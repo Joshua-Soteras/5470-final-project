@@ -17,6 +17,108 @@ see [Files still to be created](#files-still-to-be-created).
 
 ---
 
+## Architecture
+
+### System pipeline
+
+How the scripts connect from start to finish:
+
+```mermaid
+flowchart TD
+    A[run_experiments.sh] -->|1 - apply condition| B[emulate.sh\ndummynet / pfctl]
+    A -->|2 - run measurements| C[tcp_module.py]
+    A -->|2 - run measurements| D[udp_module.py]
+    A -->|3 - congested condition only| E[background_flood.py]
+    E -->|competing TCP traffic| C
+    C -->|appends one row| F[results/tcp_results.csv]
+    D -->|appends one row| G[results/udp_results.csv]
+    F --> H[analyze.py]
+    G --> H
+    H -->|generates| I[plots/]
+    B -->|tear down after each condition| A
+```
+
+### TCP module — what happens inside one run
+
+Both throughput and latency modes run sequentially per invocation. Each produces metrics that are saved together in one CSV row.
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant S as Server Thread
+    participant C as Client (main thread)
+
+    Note over O,C: ── Throughput mode ──
+    O->>S: start daemon thread
+    S->>S: bind(:5201), listen()
+    O->>O: sleep 0.05s
+    O->>C: run_throughput_client()
+    C->>S: connect()
+    loop n_messages
+        C->>S: sendall(payload bytes)
+    end
+    C->>S: close() sends FIN
+    S->>S: recv() returns b"" — record elapsed_s + total_bytes
+    O->>S: join(timeout=10s)
+    O->>O: throughput = total_bytes × 8 / elapsed_s / 1e6
+
+    Note over O,C: ── Latency mode (ping-pong) ──
+    O->>S: start echo server thread on :5202
+    O->>C: run_latency_client()
+    loop n_pings
+        C->>C: t0 = perf_counter()
+        C->>S: [4-byte length prefix][payload]
+        S->>C: echo body back
+        C->>C: RTT = (perf_counter() - t0) × 1000 ms
+    end
+    O->>O: mean + stdev of RTT list → save CSV row
+```
+
+### UDP module — what happens inside one run
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant R as Receiver Thread
+    participant S as Sender (main thread)
+
+    O->>R: start daemon thread
+    R->>R: bind(:5301), settimeout(2s)
+    O->>O: sleep 0.1s
+    O->>S: run_udp_sender()
+    loop n_messages — paced at send_rate_pps
+        S->>R: [seq_num 8B][send_ns 8B][zero padding]
+        R->>R: record arrival_ns, unpack seq_num + send_ns
+    end
+    Note over R: 2 s silence → timeout → transfer done
+    R->>R: compute loss_rate, jitter, avg_owd
+    O->>R: join(timeout)
+    O->>O: compute throughput → save CSV row
+```
+
+### Why background_flood.py exists
+
+`dummynet`'s bandwidth cap alone is **not enough** to trigger TCP's congestion control (AIMD). Here is why, and what the flood fixes:
+
+```mermaid
+flowchart TD
+    subgraph no_flood["Without flood"]
+        D1[dummynet bandwidth cap] -->|single flow — queue never fills| T1[TCP experiment]
+        T1 --> N1["AIMD never triggers\n(no loss events, no congestion window reduction)"]
+    end
+
+    subgraph with_flood["With --flood"]
+        F[background_flood.py\nport 5400 — no rate limit] -->|saturates queue| Q[shared loopback queue]
+        T2[TCP experiment\nport 5201] --> Q
+        Q -->|overflow → packet drops| L[loss events fire on both flows]
+        L -->|AIMD detects loss| R["congestion window cut in half\nthroughput drops, RTT rises\n← this is what we want to measure"]
+    end
+```
+
+In short: the flood creates the **competition** that forces the queue to overflow, which produces the **loss events** that activate AIMD. Without it, TCP on loopback under a bandwidth cap just slows down gracefully with no observable congestion control behavior. UDP is unaffected by the flood (it has no congestion control), so the contrast between TCP backing off and UDP holding steady becomes clearly visible in the results.
+
+---
+
 ## Prerequisites
 
 | Requirement | Version | Notes |
