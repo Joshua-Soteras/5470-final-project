@@ -107,8 +107,14 @@ cat results/udp_results.csv
 
 **Script:** `scripts/02_baseline_sweep.sh`
 
-**What it does:** Sweeps six payload sizes (64B → 65536B) across both protocols,
-three runs each. No dummynet. Produces 36 rows total.
+**What it does:** Sweeps payload sizes across both protocols, three runs each.
+No dummynet. Produces 33 rows total.
+
+- **TCP**: 6 sizes (64B → 65536B) — TCP streams, so 65536B is valid.
+- **UDP**: 5 sizes (64B → 16384B) — UDP datagrams are capped at 65507 bytes by the
+  protocol (65535 − 20 IP header − 8 UDP header). 65536B exceeds that limit and the
+  kernel rejects the send with `EMSGSIZE`. 16384B is the meaningful upper bound for
+  UDP because it sits at the loopback MTU, which is where IP fragmentation begins.
 
 **Why we do this:** This is your **control group**. Every result from Scripts 3
 and 4 is compared against these numbers. Running it without any network emulation
@@ -134,12 +140,13 @@ bash scripts/02_baseline_sweep.sh
 
 Confirm the row counts look right:
 ```bash
-# Should be 37 lines (1 header + 36 data rows, plus any from the smoke test)
+# TCP: 1 header + 1 smoke row + 18 baseline rows = 20 lines
+# UDP: 1 header + 1 smoke row + 15 baseline rows = 17 lines
 wc -l results/tcp_results.csv
 wc -l results/udp_results.csv
 ```
 
-Check that all six payload sizes appear for both protocols:
+Check that all payload sizes appear (6 for TCP, 5 for UDP):
 ```bash
 awk -F',' 'NR>1 {print $1, $2, $8}' results/tcp_results.csv | sort | uniq -c
 awk -F',' 'NR>1 {print $1, $2, $8}' results/udp_results.csv | sort | uniq -c
@@ -334,10 +341,10 @@ uv run pytest tests/ -v
 | Step | Script | Runtime | Requires sudo | Rows added |
 |------|--------|---------|---------------|-----------|
 | 1 | `01_smoke_test.sh` | < 10 sec | No | 2 |
-| 2 | `02_baseline_sweep.sh` | 5–8 min | No | 36 |
+| 2 | `02_baseline_sweep.sh` | 5–8 min | No | 33 |
 | 3 | `03_congested_sweep.sh` | 6–10 min | No | 30 |
 | 4 | `04_emulated_conditions.sh` | 30–45 min | Yes | 90 |
-| **Total** | | **~50–65 min** | | **158** |
+| **Total** | | **~50–65 min** | | **155** |
 
 ---
 

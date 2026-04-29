@@ -332,10 +332,18 @@ def run_udp_sender(host: str, port: int, payload_size: int,
         Target send rate in packets per second (e.g. 500 means one packet
         every 2 ms). Controls the sleep duration between sends.
     """
+    # UDP datagrams are limited to 65535 bytes total (IP packet max).
+    # Subtract 20 bytes IP header + 8 bytes UDP header = 65507 bytes max payload.
+    UDP_MAX_PAYLOAD = 65507
     if payload_size < HEADER_SIZE:
-        # A datagram smaller than the header can't fit seq_num + timestamp.
         raise ValueError(
             f"payload_size ({payload_size}) must be >= HEADER_SIZE ({HEADER_SIZE})"
+        )
+    if payload_size > UDP_MAX_PAYLOAD:
+        raise ValueError(
+            f"payload_size ({payload_size}) exceeds the UDP datagram limit of "
+            f"{UDP_MAX_PAYLOAD} bytes (65535 - 20 IP header - 8 UDP header). "
+            f"Use a payload <= {UDP_MAX_PAYLOAD} or switch to TCP for large transfers."
         )
 
     # Create a UDP socket for sending. No bind() needed on the sender side —
