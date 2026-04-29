@@ -60,7 +60,7 @@ trap teardown EXIT
 # Format: "label delay_ms bw_mbit queue_slots loss_rate"
 CONDITIONS=(
     "high_latency  50  100   32   0.0"
-    "bufferbloat    0    1  1000  0.0"
+    "bufferbloat    0    1   100  0.0"
     "lossy          0  100   32   0.05"
 )
 

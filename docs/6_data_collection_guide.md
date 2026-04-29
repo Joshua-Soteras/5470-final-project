@@ -229,7 +229,7 @@ Modifying the packet filter requires root privileges.
 | Condition | Settings | What it measures |
 |-----------|----------|-----------------|
 | `high_latency` | 50ms delay, 100Mbit/s, small queue | Propagation delay — OWD rises to ~50ms, TCP RTT to ~100ms |
-| `bufferbloat` | 0ms delay, 1Mbit/s, 1000-slot queue | Large queue + slow link — latency spikes while loss stays near 0% |
+| `bufferbloat` | 0ms delay, 1Mbit/s, 100-slot queue | Large queue + slow link — latency spikes while loss stays near 0% |
 | `lossy` | 0ms delay, 100Mbit/s, 5% random loss | UDP shows 5% loss; TCP hides it via retransmit but throughput drops |
 
 **Before running — extra safety check:**

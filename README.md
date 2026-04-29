@@ -790,10 +790,10 @@ and packet loss rate.
 **Step 1 — Configure the pipe.**
 
 A "pipe" in dummynet is a virtual link with configurable properties. This command
-creates pipe 1 with 20 ms delay, 1 Mbit/s bandwidth, a 1000-slot queue, and 1% loss:
+creates pipe 1 with 20 ms delay, 1 Mbit/s bandwidth, a 100-slot queue, and 1% loss:
 
 ```bash
-sudo dnctl pipe 1 config delay 20 bw 1Mbit/s queue 1000 plr 0.01
+sudo dnctl pipe 1 config delay 20 bw 1Mbit/s queue 100 plr 0.01
 ```
 
 **Step 2 — Route loopback traffic through the pipe.**
@@ -828,7 +828,7 @@ sudo pfctl -d
 |-------|-------|-----------|-------|------|---------|
 | `baseline` | 0 ms | 100 Mbit/s | 32 slots | 0% | No emulation |
 | `high_latency` | 50 ms | 100 Mbit/s | 32 slots | 0% | Propagation delay |
-| `bufferbloat` | 0 ms | 1 Mbit/s | 1000 slots | 0% | Large queue + slow link |
+| `bufferbloat` | 0 ms | 1 Mbit/s | 100 slots | 0% | Large queue + slow link |
 | `lossy` | 0 ms | 100 Mbit/s | 32 slots | 5% | Random packet loss |
 | `congested` | 20 ms | 2 Mbit/s | 500 slots | 1% | Combined stress |
 
@@ -886,7 +886,7 @@ sweep under each. Tears down dummynet between conditions. **Requires sudo.**
 | Condition | What it simulates | Key signal |
 |-----------|------------------|------------|
 | `high_latency` | 50ms propagation delay | OWD and RTT rise to ~50ms / ~100ms |
-| `bufferbloat` | 1Mbit/s link + 1000-slot queue | Latency spikes while loss stays near 0% |
+| `bufferbloat` | 1Mbit/s link + 100-slot queue | Latency spikes while loss stays near 0% |
 | `lossy` | 5% random packet loss | UDP shows 5% loss; TCP hides it via retransmit but throughput drops |
 
 Produces 90 rows.
@@ -1000,6 +1000,33 @@ look like it completed successfully after the first condition.
 once at script start (to prompt upfront), once at the top of each condition's
 loop iteration, and once inside `teardown()` itself. `sudo -v` does nothing if
 the credential is still valid, and re-authenticates silently if it has expired.
+
+### dummynet queue size hard limit — `2 <= queue size <= 100`
+
+**Encountered during:** `scripts/04_emulated_conditions.sh`, `bufferbloat` condition.
+
+**Error:**
+```
+dnctl: 2 <= queue size <= 100
+```
+
+**Root cause:** The `bufferbloat` condition was originally designed with `queue 1000`
+to simulate an extremely large buffer. macOS's `dnctl` enforces a hard limit of
+**100 slots maximum** per pipe. The value 1000 was taken from Linux `tc/netem`
+examples where no such ceiling exists. macOS dummynet does not document this limit
+prominently — it is only visible when the command fails at runtime.
+
+**Fix:** Queue size reduced from 1000 to **100** (the dnctl maximum). At 1 Mbit/s
+bandwidth, a 100-slot queue still produces clear bufferbloat behavior: each slot
+holds a full-size packet (~16KB at the largest payload), so the queue can buffer
+up to ~1.6 MB of data, creating significant queuing delay while keeping loss near
+zero. The scientific signal (latency rising, loss staying flat) is preserved.
+
+**Impact on results:** Bufferbloat queuing depth is smaller than originally
+designed, but the characteristic signature — OWD and RTT rising while loss stays
+at 0% — still appears clearly in the data.
+
+---
 
 **Impact on results:** The first four runs of script 04 each produced only
 `high_latency` rows (15 per run = 60 total) before stopping. `bufferbloat` and
