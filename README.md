@@ -1015,6 +1015,173 @@ All five conditions must be present for all five plots to generate.
 
 ---
 
+## Results and Analysis
+
+The plots below were generated from the full data collection sweep across all five
+conditions. Each plot isolates one aspect of TCP vs UDP behavior.
+
+---
+
+### Plot 1 — Throughput vs Payload Size (Baseline)
+
+![Throughput vs Payload Size](plots/01_throughput_vs_payload.png)
+
+**What it shows:** Raw throughput for both protocols on clean loopback (no
+emulation, no competing traffic) as payload size increases from 64B to 64KB.
+
+**Key findings:**
+
+- **TCP scales aggressively with payload size** — from ~85 Mbps at 64B to over
+  9,300 Mbps at 64KB. At small payloads, TCP spends most of its time on
+  per-message overhead (connection bookkeeping, ACKs, system calls). As payload
+  size grows, the overhead is amortized over more data per message and TCP's
+  streaming fills the loopback pipe more efficiently.
+
+- **UDP stays nearly flat** — because it is rate-limited at 500 packets per
+  second. Throughput scales linearly with payload (rate × size × 8 bits), topping
+  out at ~51 Mbps at 16KB. UDP cannot self-pace to fill available bandwidth the
+  way TCP does.
+
+- **The vertical dashed line at 16KB marks the loopback MTU** — the IP
+  fragmentation threshold on macOS. TCP's error bars widen noticeably at this
+  point, reflecting OS scheduling variability when datagrams must be fragmented
+  and reassembled.
+
+- **The scale gap between the two protocols is the core result of this plot.** TCP
+  achieves ~180× higher throughput than UDP at 16KB under identical conditions.
+  This is not a defect in UDP — it is a consequence of UDP's design. UDP is
+  intentionally simple and gives the application full control over send rate.
+
+---
+
+### Plot 2 — TCP Latency (RTT) vs Payload Size — All Conditions
+
+![TCP Latency vs Payload Size](plots/02_tcp_latency_vs_payload.png)
+
+**What it shows:** Mean round-trip time for TCP ping-pong messages across all five
+conditions, at each payload size.
+
+**Key findings:**
+
+- **Baseline and congested sit near zero** (~0.04–0.07ms) across all payload
+  sizes. TCP on loopback recovers from congestion events so quickly that the
+  averaged RTT barely registers. This is a loopback artifact — on a real network
+  with higher base RTT, congestion would show a larger signal.
+
+- **High latency is flat at ~103ms** regardless of payload size, confirming the
+  dummynet 50ms one-way delay is working correctly (RTT ≈ 2 × 50ms). The
+  payload-independence is expected — dummynet adds fixed delay per packet, not
+  per byte.
+
+- **Bufferbloat produces the most dramatic result** — RTT stays low until 4KB,
+  then explodes to ~1,050ms at 16KB with a ±700ms standard deviation. This is
+  the classic bufferbloat signature: the 100-slot queue at 1 Mbit/s fills up as
+  larger payloads require more bandwidth than the link provides, trapping packets
+  in the queue and inflating RTT. The wide error bar shows the queue oscillates
+  between filling and draining, causing high variability between runs.
+
+- **Lossy shows moderate RTT elevation** (~15–100ms), caused by TCP's
+  retransmission mechanism. When a segment is lost, TCP waits for a timeout or
+  duplicate ACK before retransmitting, which inflates the measured RTT for that
+  ping.
+
+---
+
+### Plot 3 — UDP Packet Loss vs Payload Size
+
+![UDP Packet Loss vs Payload Size](plots/03_udp_loss_vs_payload.png)
+
+**What it shows:** UDP loss rate under the `lossy` condition (5% random drop via
+dummynet) and the `congested` condition (background TCP flood), across payload
+sizes.
+
+**Key findings:**
+
+- **Lossy holds near 5% across all payload sizes** (range: 4.2–5.4%), confirming
+  the dummynet PLR setting is working correctly. The slight variability is expected
+  — PLR is probabilistic, not deterministic. The loss rate is payload-independent
+  because dummynet drops on a per-packet basis, not per-byte.
+
+- **Congested shows exactly 0% loss** at all payload sizes. The background flood
+  does cause queue pressure, but at UDP's paced rate (200 pps), the offered load
+  never exceeds what the loopback queue can absorb. UDP doesn't back off under
+  congestion — it simply keeps sending — and in this case the queue never
+  overflowed enough to drop UDP packets.
+
+- **This plot is also the most important for report context:** TCP experiences the
+  same 5% loss under the lossy condition but hides it entirely via retransmission.
+  TCP's loss rate column always reads 0% because losses are transparent to the
+  application. UDP surfaces them directly — what the sender sent and the receiver
+  didn't get is visible in the sequence number gaps.
+
+---
+
+### Plot 4 — UDP Jitter vs Payload Size — All Conditions
+
+![UDP Jitter vs Payload Size](plots/04_udp_jitter_vs_payload.png)
+
+**What it shows:** Mean absolute deviation of inter-arrival gaps (RFC 3550 jitter)
+for UDP datagrams across all five conditions.
+
+**Key findings:**
+
+- **Baseline and congested stay near zero** (~0.05–0.15ms). Clean loopback
+  delivers datagrams at highly uniform intervals — exactly what you'd expect with
+  no network emulation and a paced sender.
+
+- **High latency produces flat, elevated jitter at ~1.1ms** across all payload
+  sizes. The 50ms delay pipe in dummynet introduces slight irregularity in how
+  packets are released from the pipe, but the effect is consistent and
+  payload-independent.
+
+- **Bufferbloat shows a striking downward trend** — jitter starts high at small
+  payloads (~0.4–1.2ms at 64B–256B) and drops toward zero at 16KB. At small
+  payloads, the 1 Mbit/s queue drains quickly but refills irregularly, causing
+  variable delivery timing. At large payloads the queue is constantly saturated,
+  so packets drain at a predictable steady rate — paradoxically giving more
+  uniform inter-arrival gaps at the cost of much higher absolute delay.
+
+- **Lossy shows a rising trend** — jitter increases with payload from ~0.8ms at
+  64B to ~1.4ms at 16KB. When a packet is dropped, the receiver sees a larger
+  gap between consecutive arrivals. Larger payloads take longer to transmit, so
+  each gap event represents more time, increasing the mean deviation.
+
+---
+
+### Plot 5 — TCP vs UDP Throughput — Congested Condition
+
+![TCP vs UDP Throughput under Congestion](plots/05_congestion_comparison.png)
+
+**What it shows:** Side-by-side throughput for TCP (with flood) and UDP (without
+flood) under the `congested` condition, at each payload size.
+
+**Key findings:**
+
+- **TCP throughput dominates at every payload size** — reaching ~11,600 Mbps at
+  16KB even under congestion. TCP's streaming model saturates available bandwidth
+  regardless of competing traffic, especially on loopback where recovery from
+  congestion events is near-instantaneous.
+
+- **UDP throughput is negligible by comparison** — capped at ~51 Mbps at 16KB
+  because it is rate-limited to 200 pps. The orange bars are barely visible next
+  to TCP's blue bars.
+
+- **The expected AIMD throughput reduction is not visible here** — loopback RTT
+  is so low (~0.04ms) that TCP detects loss, halves its congestion window, and
+  ramps back up within microseconds. Over the measurement window (500 messages),
+  this averages out to near-baseline throughput. On a real network with RTTs in
+  the tens of milliseconds, the AIMD backoff would be clearly visible as a
+  sustained throughput drop.
+
+- **The key takeaway from this plot is the structural difference,** not the
+  magnitude: TCP adapts to the network (with congestion control), while UDP does
+  not. On loopback the adaptation is invisible because recovery is too fast. On a
+  real WAN link, the same experiment would show TCP throughput collapsing under
+  the flood while UDP held its rate — until UDP's queue overflows and it starts
+  dropping packets with no mechanism to recover.
+
+---
+
 ## Files Still to Be Created
 
 | File | Purpose |

@@ -12,7 +12,5 @@ wheels/
 # Claude Code context
 CLAUDE.md
 
-# Generated experiment output
+# Generated experiment output — CSVs excluded (raw data), plots committed
 results/*.csv
-plots/*.png
-plots/*.pdf
