@@ -10,7 +10,7 @@ bandwidth caps, packet loss, bufferbloat) are emulated with macOS's built-in
 | `src/udp_module.py` | Complete | UDP sender + receiver — throughput, loss, jitter, one-way delay |
 | `src/tcp_module.py` | Complete | TCP sender + receiver — throughput, RTT latency |
 | `src/background_flood.py` | Complete | Background TCP flood for congestion comparison |
-| `src/analyze.py` | Not yet built | Aggregates CSVs, generates 5 plots |
+| `src/analyze.py` | Complete | Aggregates CSVs across 3 runs, generates 5 plots into `plots/` |
 
 Supporting scripts (`src/emulate.sh`, `run_experiments.sh`) are still to be built —
 see [Files still to be created](#files-still-to-be-created).
@@ -855,9 +855,11 @@ bash scripts/01_smoke_test.sh
 
 ### `scripts/02_baseline_sweep.sh` — control group data, no emulation
 
-Sweeps six payload sizes (64B → 65536B) across both protocols, three runs each.
-No dummynet required. This is your **control group** — every result from Scripts
-3 and 4 is compared against these numbers. Produces 36 rows.
+Sweeps payload sizes across both protocols, three runs each. TCP covers six sizes
+(64B → 65536B); UDP covers five sizes (64B → 16384B) — 65536B is excluded because
+it exceeds the UDP datagram limit of 65507 bytes. No dummynet required. This is
+your **control group** — every result from Scripts 3 and 4 is compared against
+these numbers. Produces 33 rows (18 TCP + 15 UDP).
 
 ```bash
 bash scripts/02_baseline_sweep.sh
@@ -903,10 +905,10 @@ bash scripts/04_emulated_conditions.sh
 | Script | Rows added | Requires sudo |
 |--------|-----------|---------------|
 | `01_smoke_test.sh` | 2 | No |
-| `02_baseline_sweep.sh` | 36 | No |
+| `02_baseline_sweep.sh` | 33 | No |
 | `03_congested_sweep.sh` | 30 | No |
 | `04_emulated_conditions.sh` | 90 | Yes |
-| **Total** | **158** | |
+| **Total** | **155** | |
 
 ---
 
@@ -915,10 +917,45 @@ bash scripts/04_emulated_conditions.sh
 | File | Purpose |
 |------|---------|
 | `src/emulate.sh` | Shell script — applies and tears down dummynet conditions by name |
-| `src/analyze.py` | Loads CSVs, aggregates 3 runs, generates 5 plots into `plots/` |
 | `run_experiments.sh` | Loops over all payload × buffer × condition × run combinations |
 
 See `docs/PROJECT_BREAKDOWN.md` for the detailed implementation spec for each.
+
+---
+
+## Implementation Notes
+
+This section records design decisions and bugs encountered during development that
+are relevant to understanding the measurement results.
+
+### UDP datagram size limit — EMSGSIZE (Errno 40)
+
+**Encountered during:** `scripts/02_baseline_sweep.sh` at payload = 65536B.
+
+**Error:**
+```
+OSError: [Errno 40] Message too long
+```
+
+**Root cause:** The UDP protocol limits a single datagram to **65,507 bytes**
+(65,535 byte IP packet − 20 byte IP header − 8 byte UDP header). A payload of
+65,536 bytes is 29 bytes over this limit. Unlike TCP — which is a stream and
+silently segments data into MSS-sized segments — UDP transmits each application
+write as one atomic datagram. If the datagram exceeds the socket limit, the kernel
+rejects the `sendto()` call with `EMSGSIZE` before the packet ever reaches the
+network stack.
+
+**Fix:** The baseline sweep was updated to use separate payload arrays for TCP and
+UDP. TCP retains all six payload sizes (64B → 65536B). UDP uses five sizes (64B →
+16384B), with 65536B excluded. 16384B was chosen as the UDP ceiling because it
+sits at the macOS loopback MTU — the highest payload size that exercises IP
+fragmentation without hitting the protocol limit. A validation check was also added
+to `run_udp_sender()` that raises `ValueError` with an explanatory message if a
+payload above 65507 bytes is requested, instead of propagating the OS-level error.
+
+**Impact on results:** TCP baseline includes a 65536B data point; UDP baseline
+does not. When comparing TCP vs UDP throughput at large payload sizes, the
+comparison tops out at 16384B for UDP.
 
 ---
 
