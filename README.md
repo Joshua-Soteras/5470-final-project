@@ -836,6 +836,80 @@ These will be automated via `src/emulate.sh` once it is built.
 
 ---
 
+## Data Collection Scripts
+
+All scripts live in `scripts/` and must be run in order. Each one appends rows
+to the existing CSVs — none overwrite previous results. See
+`docs/data_collection_guide.md` for a full explanation of why each step exists.
+
+### `scripts/01_smoke_test.sh` — verify the environment works
+
+Runs one UDP experiment and one TCP experiment at 100 messages each. Checks that
+both CSV files are created and prints a pass/fail result. Finishes in under 10
+seconds. **Always run this first** — if it fails, something is wrong with your
+environment and you will catch it before wasting 30+ minutes on a full sweep.
+
+```bash
+bash scripts/01_smoke_test.sh
+```
+
+### `scripts/02_baseline_sweep.sh` — control group data, no emulation
+
+Sweeps six payload sizes (64B → 65536B) across both protocols, three runs each.
+No dummynet required. This is your **control group** — every result from Scripts
+3 and 4 is compared against these numbers. Produces 36 rows.
+
+```bash
+bash scripts/02_baseline_sweep.sh
+```
+
+### `scripts/03_congested_sweep.sh` — TCP congestion control under competing traffic
+
+Same payload sweep as Script 2 but with `background_flood.py` active during TCP
+experiments. The flood saturates the loopback queue, causing packet drops that
+trigger TCP's AIMD congestion control — you see throughput drop and latency rise.
+UDP runs without the flood (it has no congestion control) so the two protocols
+can be compared side-by-side in the same condition. No dummynet required.
+Produces 30 rows.
+
+```bash
+bash scripts/03_congested_sweep.sh
+```
+
+### `scripts/04_emulated_conditions.sh` — dummynet network conditions
+
+Applies three dummynet conditions to loopback in sequence, running the payload
+sweep under each. Tears down dummynet between conditions. **Requires sudo.**
+
+| Condition | What it simulates | Key signal |
+|-----------|------------------|------------|
+| `high_latency` | 50ms propagation delay | OWD and RTT rise to ~50ms / ~100ms |
+| `bufferbloat` | 1Mbit/s link + 1000-slot queue | Latency spikes while loss stays near 0% |
+| `lossy` | 5% random packet loss | UDP shows 5% loss; TCP hides it via retransmit but throughput drops |
+
+Produces 90 rows.
+
+```bash
+bash scripts/04_emulated_conditions.sh
+```
+
+> If the script crashes mid-run, reset dummynet manually:
+> ```bash
+> sudo dnctl -q flush && sudo pfctl -f /etc/pf.conf && sudo pfctl -d
+> ```
+
+### Total data produced
+
+| Script | Rows added | Requires sudo |
+|--------|-----------|---------------|
+| `01_smoke_test.sh` | 2 | No |
+| `02_baseline_sweep.sh` | 36 | No |
+| `03_congested_sweep.sh` | 30 | No |
+| `04_emulated_conditions.sh` | 90 | Yes |
+| **Total** | **158** | |
+
+---
+
 ## Files Still to Be Created
 
 | File | Purpose |
