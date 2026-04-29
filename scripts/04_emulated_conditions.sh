@@ -40,7 +40,7 @@ apply_condition() {
     local label=$1 delay=$2 bw=$3 queue=$4 plr=$5
     echo "  Applying dummynet: delay=${delay}ms bw=${bw}Mbit/s queue=${queue} loss=${plr}"
     sudo dnctl pipe 1 config delay $delay bw ${bw}Mbit/s queue $queue plr $plr
-    echo "dummynet out quick on lo0 all pipe 1" | sudo pfctl -f -
+    echo "dummynet out quick on lo0 all pipe 1" | sudo pfctl -f - 2>/dev/null || true
     sudo pfctl -e 2>/dev/null || true  # -e enables pf; ignore error if already enabled
 }
 
