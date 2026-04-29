@@ -47,7 +47,7 @@ apply_condition() {
 teardown() {
     echo "  Tearing down dummynet..."
     sudo dnctl -q flush
-    sudo pfctl -f /etc/pf.conf
+    sudo pfctl -f /etc/pf.conf 2>/dev/null || true  # reload default rules; ignore warnings
     sudo pfctl -d 2>/dev/null || true  # -d disables pf; ignore error if already disabled
     echo "  Teardown complete."
 }
