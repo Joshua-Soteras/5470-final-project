@@ -46,6 +46,7 @@ apply_condition() {
 
 teardown() {
     echo "  Tearing down dummynet..."
+    sudo -v 2>/dev/null || true  # refresh credential in case it expired during experiments
     sudo dnctl -q flush
     sudo pfctl -f /etc/pf.conf 2>/dev/null || true  # reload default rules; ignore warnings
     sudo pfctl -d 2>/dev/null || true  # -d disables pf; ignore error if already disabled
@@ -71,6 +72,11 @@ echo "Payload sizes: ${PAYLOAD_SIZES[*]}"
 echo "Note: this script requires sudo for dummynet commands."
 echo ""
 
+# Prompt for sudo password upfront and cache it.
+# Each condition also refreshes the cache — high_latency takes ~6 minutes,
+# which is long enough for the default 5-minute sudo timeout to expire.
+sudo -v
+
 for condition_str in "${CONDITIONS[@]}"; do
     # Split the condition string into its fields
     read -r label delay bw queue plr <<< "$condition_str"
@@ -78,6 +84,10 @@ for condition_str in "${CONDITIONS[@]}"; do
     echo "──────────────────────────────────────"
     echo "Condition: $label"
     echo "──────────────────────────────────────"
+
+    # Refresh sudo credential before each condition — high_latency alone
+    # takes ~6 minutes, which outlasts the default sudo timeout.
+    sudo -v
 
     apply_condition "$label" "$delay" "$bw" "$queue" "$plr"
     echo ""
