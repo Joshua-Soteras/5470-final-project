@@ -953,6 +953,27 @@ fragmentation without hitting the protocol limit. A validation check was also ad
 to `run_udp_sender()` that raises `ValueError` with an explanatory message if a
 payload above 65507 bytes is requested, instead of propagating the OS-level error.
 
+**Why 16384B specifically — not some value between 16384 and 65507?**
+
+Every network interface has an MTU (Maximum Transmission Unit): the largest payload
+it can carry in a single packet without the IP layer having to fragment it. On a
+real Ethernet or Wi-Fi interface the MTU is typically 1,500 bytes. On macOS
+loopback (`lo0`), Apple sets it to **16,384 bytes**.
+
+When a UDP datagram exceeds the MTU, the IP layer splits it into multiple fragments,
+sends them independently, and reassembles them at the destination. This is called
+**IP fragmentation**, and it is one of the core behaviors this project is designed
+to measure — it is where payload size begins to affect delivery reliability and
+latency in a non-linear way.
+
+16,384B is therefore the most scientifically meaningful upper bound for UDP on this
+platform: it sits exactly at the fragmentation threshold. Payloads below it travel
+as a single unfragmented packet; payloads at or above it trigger fragmentation.
+Any value between 16,385B and 65,507B would only show "more fragmentation than
+16,384B" without revealing a new behavior. Stopping at 16,384B keeps the payload
+sweep focused on the transition point rather than adding redundant data points in a
+range with no additional scientific value.
+
 **Impact on results:** TCP baseline includes a 65536B data point; UDP baseline
 does not. When comparing TCP vs UDP throughput at large payload sizes, the
 comparison tops out at 16384B for UDP.
