@@ -912,6 +912,109 @@ bash scripts/04_emulated_conditions.sh
 
 ---
 
+## Step-by-Step: Analyzing the Data with `analyze.py`
+
+### What it does
+
+`src/analyze.py` is the data pipeline and visualization module. It loads both CSV
+files, aggregates the three runs per condition into a mean ± standard deviation,
+and generates five plots into `plots/`. Each plot isolates one aspect of the
+comparison between TCP and UDP behavior under different network conditions.
+
+### What we are analyzing
+
+The core research question is: **how does payload size affect TCP and UDP
+performance, and how does each protocol respond to network stress?**
+
+To answer this, the data was collected under five conditions:
+
+| Condition | What it isolates |
+|-----------|-----------------|
+| `baseline` | Raw loopback performance — no emulation, no competing traffic |
+| `congested` | TCP's AIMD congestion control — competing flood traffic forces queue overflow and loss events |
+| `high_latency` | Propagation delay — 50ms one-way delay added via dummynet |
+| `bufferbloat` | Queuing delay — 1 Mbit/s cap + 100-slot queue fills under load, latency spikes while loss stays near zero |
+| `lossy` | Packet loss — 5% random drop rate applied by dummynet |
+
+### The five plots
+
+**Plot 1 — Throughput vs Payload Size (baseline)**
+
+Shows how raw throughput scales with payload size for both protocols on a clean
+loopback. TCP throughput rises steeply because larger payloads amortize per-message
+overhead and TCP's streaming lets it fill the pipe. UDP throughput rises linearly
+with payload (it is rate-limited at 500 pps, so throughput = rate × payload size).
+A vertical line marks the loopback MTU at 16,384 bytes — the fragmentation
+threshold.
+
+**Plot 2 — TCP Latency vs Payload Size (all conditions)**
+
+Shows mean RTT across all five conditions on a single chart. Baseline and
+congested cluster near zero. High_latency shows ~100ms RTT (2 × 50ms one-way
+delay). Bufferbloat shows the highest and most variable RTT because the queue
+builds up. Lossy shows moderately elevated RTT from retransmission delays.
+
+**Plot 3 — UDP Packet Loss vs Payload Size (lossy + bufferbloat)**
+
+Shows loss rate for the two conditions where loss is meaningful. Lossy holds near
+5% across all payload sizes (random drop, payload-independent). Bufferbloat shows
+rising loss at larger payloads because the 200 pps send rate starts to exceed the
+1 Mbit/s link capacity — the queue overflows and drops packets.
+
+**Plot 4 — UDP Jitter vs Payload Size (all conditions)**
+
+Shows inter-arrival gap variability. Baseline and lossy are near zero. High_latency
+shows elevated jitter from pacing through the 50ms delay pipe. Bufferbloat shows
+the highest jitter — queue depth varies dynamically as packets arrive faster than
+the link can drain, causing irregular delivery intervals.
+
+**Plot 5 — TCP vs UDP Throughput Under Congestion**
+
+A grouped bar chart comparing throughput for each payload size under the
+`congested` condition. TCP throughput drops significantly (AIMD halves the
+congestion window on each loss event). UDP throughput is unaffected — it has no
+congestion control and does not back off. This plot directly shows the core
+protocol difference the project is designed to demonstrate.
+
+### How to run it
+
+```bash
+uv run python src/analyze.py
+```
+
+The script prints a summary of the loaded data before generating plots:
+
+```
+TCP rows: 170  conditions: baseline, bufferbloat, congested, high_latency, lossy
+UDP rows: 156  conditions: baseline, bufferbloat, congested, high_latency, lossy
+Generating plots...
+  [1/5] plots/1_throughput_vs_payload.png
+  [2/5] plots/2_tcp_latency_vs_payload.png
+  [3/5] plots/3_udp_loss_vs_payload.png
+  [4/5] plots/4_udp_jitter_vs_payload.png
+  [5/5] plots/5_congestion_comparison.png
+Done.
+```
+
+Plots are saved to `plots/` as PNG files. Open them in any image viewer. Each
+plot uses error bars (±1 standard deviation) across the three runs per condition
+to show measurement variability.
+
+### If a plot is skipped
+
+`analyze.py` skips any plot where the required data is missing and prints a
+warning instead of crashing. If you see `[SKIP]` for a plot, check that the
+relevant condition exists in the CSV with:
+
+```bash
+awk -F',' 'NR>1 {print $4}' results/tcp_results.csv | sort | uniq -c
+awk -F',' 'NR>1 {print $4}' results/udp_results.csv | sort | uniq -c
+```
+
+All five conditions must be present for all five plots to generate.
+
+---
+
 ## Files Still to Be Created
 
 | File | Purpose |
