@@ -25,16 +25,16 @@ How the scripts connect from start to finish:
 
 ```mermaid
 flowchart TD
-    A[run_experiments.sh] -->|1 - apply condition| B[emulate.sh\ndummynet / pfctl]
-    A -->|2 - run measurements| C[tcp_module.py]
-    A -->|2 - run measurements| D[udp_module.py]
-    A -->|3 - congested condition only| E[background_flood.py]
+    A["run_experiments.sh"] -->|1 - apply condition| B["emulate.sh<br/>dummynet / pfctl"]
+    A -->|2 - run measurements| C["tcp_module.py"]
+    A -->|2 - run measurements| D["udp_module.py"]
+    A -->|3 - congested condition only| E["background_flood.py"]
     E -->|competing TCP traffic| C
-    C -->|appends one row| F[results/tcp_results.csv]
-    D -->|appends one row| G[results/udp_results.csv]
-    F --> H[analyze.py]
+    C -->|appends one row| F["results/tcp_results.csv"]
+    D -->|appends one row| G["results/udp_results.csv"]
+    F --> H["analyze.py"]
     G --> H
-    H -->|generates| I[plots/]
+    H -->|generates| I["plots/"]
     B -->|tear down after each condition| A
 ```
 
@@ -108,8 +108,8 @@ flowchart TD
     end
 
     subgraph with_flood["With --flood"]
-        F[background_flood.py\nport 5400 — no rate limit] -->|saturates queue| Q[shared loopback queue]
-        T2[TCP experiment\nport 5201] --> Q
+        F["background_flood.py\nport 5400 — no rate limit"] -->|saturates queue| Q[shared loopback queue]
+        T2["TCP experiment\nport 5201"] --> Q
         Q -->|overflow → packet drops| L[loss events fire on both flows]
         L -->|AIMD detects loss| R["congestion window cut in half\nthroughput drops, RTT rises\n← this is what we want to measure"]
     end
