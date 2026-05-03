@@ -52,8 +52,11 @@ CONDITION_LABELS = {
     "lossy":        "Lossy (5% loss)",
 }
 
-# Payload sizes used in the sweep — used to set x-axis tick positions.
+# Payload sizes used in the payload sweep — used to set x-axis tick positions.
 PAYLOAD_SIZES = [64, 256, 1024, 4096, 16384, 65536]
+
+# Buffer sizes used in the buffer sweep (scripts/05_buffer_sweep.sh).
+BUFFER_SIZES = [4096, 16384, 65536, 131072, 262144]
 
 # ─── Data loading ────────────────────���────────────────────────────────────────
 
@@ -503,13 +506,162 @@ def plot_5_congestion_comparison(tcp_agg: pd.DataFrame,
     _save(fig, "05_congestion_comparison.png")
 
 
+# ─── Plot 6 — TCP vs UDP Throughput vs Buffer Size (baseline) ────────────────
+
+def _buffer_x_axis(ax: plt.Axes) -> None:
+    """
+    Sets x-axis ticks to the exact buffer sizes used in the sweep and
+    formats them as human-readable strings (4KB, 16KB, 64KB, 128KB, 256KB).
+    Uses log scale because buffer sizes span two orders of magnitude.
+    """
+    labels = [f"{b // 1024}KB" for b in BUFFER_SIZES]
+    ax.set_xscale("log")
+    ax.set_xticks(BUFFER_SIZES)
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+    ax.xaxis.set_major_formatter(ticker.NullFormatter())
+    ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+    ax.set_xticks(BUFFER_SIZES)
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+
+
+def plot_6_throughput_vs_buffer(tcp_agg: pd.DataFrame,
+                                 udp_agg: pd.DataFrame) -> None:
+    """
+    Line chart: throughput (Mbps) on Y, buffer size on X.
+    Two lines: TCP (blue) and UDP (orange), baseline condition only.
+
+    This directly answers the buffer-settings half of the research question.
+
+    What to look for:
+    - At very small buffers (4KB): throughput drops because the OS can only
+      queue a few packets at a time before blocking the sender. SO_SNDBUF
+      creates back-pressure; SO_RCVBUF causes the receiver to signal a small
+      TCP window, slowing the sender.
+    - At large buffers (128KB–256KB): throughput plateaus — once the buffer
+      is large enough to keep the pipeline full, adding more doesn't help.
+    - UDP may be less sensitive than TCP because UDP has no flow control;
+      SO_SNDBUF affects UDP only when the send rate exceeds what the kernel
+      can drain.
+    """
+    tcp_b = tcp_agg[tcp_agg["condition"] == "baseline"].copy()
+    udp_b = udp_agg[udp_agg["condition"] == "baseline"].copy()
+
+    if tcp_b.empty and udp_b.empty:
+        print("  Skipping Plot 6 — no baseline buffer-sweep data found.")
+        print("  Run scripts/05_buffer_sweep.sh first.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    if not tcp_b.empty:
+        ax.errorbar(
+            tcp_b["buffer_bytes"],
+            tcp_b["throughput_mbps_mean"],
+            yerr=tcp_b["throughput_mbps_std"].fillna(0),
+            label="TCP",
+            color=TCP_COLOR,
+            marker="o",
+            capsize=4,
+            linewidth=2,
+        )
+
+    if not udp_b.empty:
+        ax.errorbar(
+            udp_b["buffer_bytes"],
+            udp_b["throughput_mbps_mean"],
+            yerr=udp_b["throughput_mbps_std"].fillna(0),
+            label="UDP",
+            color=UDP_COLOR,
+            marker="s",
+            capsize=4,
+            linewidth=2,
+        )
+
+    ax.set_title("Throughput vs Socket Buffer Size — Baseline (payload=1024B)")
+    ax.set_xlabel("Socket Buffer Size (SO_SNDBUF / SO_RCVBUF)")
+    ax.set_ylabel("Throughput (Mbps)")
+    ax.legend()
+    ax.grid(True, which="both", linestyle="--", alpha=0.4)
+    _buffer_x_axis(ax)
+
+    fig.tight_layout()
+    _save(fig, "06_throughput_vs_buffer.png")
+
+
+# ─── Plot 7 — UDP OWD vs Buffer Size (baseline + bufferbloat) ────────────────
+
+def plot_7_owd_vs_buffer(udp_agg: pd.DataFrame) -> None:
+    """
+    Line chart: UDP average one-way delay (ms) on Y, buffer size on X.
+    Two lines: baseline and bufferbloat conditions.
+
+    This plot shows socket-layer bufferbloat: even at baseline, a very large
+    SO_RCVBUF causes packets to queue in the kernel receive buffer before the
+    application reads them, increasing OWD. Under bufferbloat (1Mbit/s link),
+    a large socket buffer amplifies this effect dramatically.
+
+    What to look for:
+    - baseline: OWD rises gently with buffer size — larger buffers mean more
+      queuing in the socket layer before delivery to the application.
+    - bufferbloat: OWD rises steeply — the slow link fills the socket buffer
+      quickly, and each additional KB of buffer adds directly to queuing delay.
+    - The gap between baseline and bufferbloat lines shows the combined effect
+      of network-layer queuing (dummynet) and socket-layer queuing (SO_RCVBUF).
+    """
+    target = ["baseline", "bufferbloat"]
+    available = [c for c in target if c in udp_agg["condition"].unique()]
+
+    if not available:
+        print("  Skipping Plot 7 — no buffer-sweep UDP data found.")
+        print("  Run scripts/05_buffer_sweep.sh first.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for condition in available:
+        subset = udp_agg[udp_agg["condition"] == condition]
+        if subset.empty:
+            continue
+
+        ax.errorbar(
+            subset["buffer_bytes"],
+            subset["avg_owd_ms_mean"],
+            yerr=subset["avg_owd_ms_std"].fillna(0),
+            label=CONDITION_LABELS.get(condition, condition),
+            color=CONDITION_COLORS.get(condition, "gray"),
+            marker="o",
+            capsize=4,
+            linewidth=2,
+        )
+
+    ax.set_title("UDP One-Way Delay vs Socket Buffer Size (payload=1024B)")
+    ax.set_xlabel("Socket Buffer Size (SO_RCVBUF)")
+    ax.set_ylabel("Avg One-Way Delay (ms)")
+    ax.set_ylim(bottom=0)
+    ax.legend()
+    ax.grid(True, which="both", linestyle="--", alpha=0.4)
+    _buffer_x_axis(ax)
+
+    fig.tight_layout()
+    _save(fig, "07_owd_vs_buffer.png")
+
+
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 def main() -> None:
     """
-    Loads both CSVs, aggregates across runs, and generates all five plots.
-    Prints a summary of what was found in the data before plotting so you
-    can catch schema or data issues before they silently produce bad charts.
+    Loads both CSVs, aggregates across runs, and generates all seven plots.
+
+    Two separate aggregation paths prevent the payload sweep and buffer sweep
+    from contaminating each other:
+
+    - Payload sweep (plots 1–5): rows where buffer_bytes == 65536 (the fixed
+      default used in scripts 02–04). Grouped by payload_bytes + condition.
+
+    - Buffer sweep (plots 6–7): rows where payload_bytes == 1024 (the fixed
+      payload used in script 05). Grouped by buffer_bytes + condition.
+
+    Plots 6–7 are skipped with a clear message if script 05 has not been run yet.
     """
     print("=== analyze.py ===")
     print()
@@ -522,35 +674,67 @@ def main() -> None:
     print(f"  UDP: {len(udp_df)} rows | conditions: {sorted(udp_df['condition'].unique())}")
     print()
 
-    # ── Aggregate ─────────────────────────────────────────────────────────────
-    # Group by payload and condition, average across the three run_index values.
-    # This collapses 3 rows per cell (run 1/2/3) into 1 row with _mean and _std.
-    print("Aggregating across runs...")
+    # ── Aggregate: payload sweep ───────────────────────────────────────────────
+    # Filter to buffer_bytes == 65536 so that buffer sweep rows (which also use
+    # some of the same conditions) do not skew the payload-sweep means.
+    print("Aggregating payload sweep (buffer_bytes == 65536)...")
 
-    tcp_agg = aggregate(
-        tcp_df,
+    tcp_payload_df = tcp_df[tcp_df["buffer_bytes"] == 65536].copy()
+    udp_payload_df = udp_df[udp_df["buffer_bytes"] == 65536].copy()
+
+    tcp_payload_agg = aggregate(
+        tcp_payload_df,
         group_cols  = ["payload_bytes", "condition"],
         metric_cols = ["throughput_mbps", "avg_latency_ms", "latency_stdev_ms"],
     )
 
-    udp_agg = aggregate(
-        udp_df,
+    udp_payload_agg = aggregate(
+        udp_payload_df,
         group_cols  = ["payload_bytes", "condition"],
         metric_cols = ["throughput_mbps", "loss_rate_pct", "jitter_ms", "avg_owd_ms"],
     )
 
-    print(f"  TCP aggregated: {len(tcp_agg)} cells")
-    print(f"  UDP aggregated: {len(udp_agg)} cells")
+    print(f"  TCP payload cells: {len(tcp_payload_agg)}")
+    print(f"  UDP payload cells: {len(udp_payload_agg)}")
     print()
 
-    # ── Plot ───────────────��─────────────────────────────��────────────────────
+    # ── Aggregate: buffer sweep ────────────────────────────────────────────────
+    # Filter to payload_bytes == 1024 (the fixed payload used in script 05).
+    # Multiple buffer sizes are present in this slice.
+    print("Aggregating buffer sweep (payload_bytes == 1024)...")
+
+    tcp_buffer_df = tcp_df[tcp_df["payload_bytes"] == 1024].copy()
+    udp_buffer_df = udp_df[udp_df["payload_bytes"] == 1024].copy()
+
+    tcp_buffer_agg = aggregate(
+        tcp_buffer_df,
+        group_cols  = ["buffer_bytes", "condition"],
+        metric_cols = ["throughput_mbps", "avg_latency_ms", "latency_stdev_ms"],
+    )
+
+    udp_buffer_agg = aggregate(
+        udp_buffer_df,
+        group_cols  = ["buffer_bytes", "condition"],
+        metric_cols = ["throughput_mbps", "loss_rate_pct", "jitter_ms", "avg_owd_ms"],
+    )
+
+    print(f"  TCP buffer cells: {len(tcp_buffer_agg)}")
+    print(f"  UDP buffer cells: {len(udp_buffer_agg)}")
+    print()
+
+    # ── Plot ──────────────────────────────────────────────────────────────────
     print("Generating plots...")
 
-    plot_1_throughput_vs_payload(tcp_agg, udp_agg)
-    plot_2_tcp_latency_vs_payload(tcp_agg)
-    plot_3_udp_loss_vs_payload(udp_agg)
-    plot_4_udp_jitter_vs_payload(udp_agg)
-    plot_5_congestion_comparison(tcp_agg, udp_agg)
+    # Plots 1–5: payload sweep
+    plot_1_throughput_vs_payload(tcp_payload_agg, udp_payload_agg)
+    plot_2_tcp_latency_vs_payload(tcp_payload_agg)
+    plot_3_udp_loss_vs_payload(udp_payload_agg)
+    plot_4_udp_jitter_vs_payload(udp_payload_agg)
+    plot_5_congestion_comparison(tcp_payload_agg, udp_payload_agg)
+
+    # Plots 6–7: buffer sweep (skipped gracefully if script 05 hasn't run yet)
+    plot_6_throughput_vs_buffer(tcp_buffer_agg, udp_buffer_agg)
+    plot_7_owd_vs_buffer(udp_buffer_agg)
 
     print()
     print(f"Done. All plots saved to {os.path.abspath(PLOTS_DIR)}/")

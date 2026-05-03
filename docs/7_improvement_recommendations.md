@@ -5,7 +5,13 @@ Master's-level course. Ordered by impact and effort.
 
 ---
 
-## Priority 1 — Buffer Size Sweep (HIGH IMPACT)
+## Priority 1 — Buffer Size Sweep ✅ DONE
+
+**Implemented in:** `scripts/05_buffer_sweep.sh`, `src/analyze.py` (plots 6 & 7)
+
+---
+
+## ~~Priority 1~~ — Buffer Size Sweep (HIGH IMPACT) — archived description
 
 **Why it's #1:** The project is titled "how MTU/payload size and *socket buffer
 settings* affect performance" but `buffer_bytes` is always `65536` in every row

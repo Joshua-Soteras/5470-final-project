@@ -10,10 +10,9 @@ bandwidth caps, packet loss, bufferbloat) are emulated with macOS's built-in
 | `src/udp_module.py` | Complete | UDP sender + receiver — throughput, loss, jitter, one-way delay |
 | `src/tcp_module.py` | Complete | TCP sender + receiver — throughput, RTT latency |
 | `src/background_flood.py` | Complete | Background TCP flood for congestion comparison |
-| `src/analyze.py` | Complete | Aggregates CSVs across 3 runs, generates 5 plots into `plots/` |
+| `src/analyze.py` | Complete | Aggregates CSVs across 3 runs, generates 7 plots into `plots/` |
 
-Supporting scripts (`src/emulate.sh`, `run_experiments.sh`) are still to be built —
-see [Files still to be created](#files-still-to-be-created).
+Data collection scripts live in `scripts/` — see [Data Collection Scripts](#data-collection-scripts).
 
 ---
 
@@ -900,6 +899,38 @@ bash scripts/04_emulated_conditions.sh
 > sudo dnctl -q flush && sudo pfctl -f /etc/pf.conf && sudo pfctl -d
 > ```
 
+### `scripts/05_buffer_sweep.sh` — socket buffer size sweep
+
+**Why this script was added:** Scripts 02–04 always held `buffer_bytes` fixed at
+65536. The project's stated research question is *"how do MTU/payload size and
+**socket buffer settings** affect performance?"* — but buffer settings were never
+varied. This script answers that half of the question.
+
+It holds payload fixed at 1024B and varies `SO_SNDBUF` / `SO_RCVBUF` across five
+sizes: **4KB, 16KB, 64KB, 128KB, 256KB**. Two conditions are run: baseline (no
+dummynet) and bufferbloat (1Mbit/s, 100-slot queue via dummynet). Both protocols,
+3 runs each. Produces 60 rows.
+
+**What you should see:**
+
+- Small buffers (4KB): TCP throughput drops because the kernel can only queue a
+  few bytes at a time before stalling the sender. UDP may show loss if the receive
+  buffer fills before the application can drain it.
+- Large buffers (128KB+): throughput plateaus — once the buffer is large enough to
+  keep the pipeline full, adding more makes no difference.
+- Under bufferbloat: UDP one-way delay (OWD) rises with buffer size even though no
+  loss occurs — the socket buffer acts as an extra queue before the 1Mbit/s
+  bottleneck. This is **socket-layer bufferbloat**: separate from the dummynet
+  queue effect, and only visible when you vary SO_RCVBUF.
+
+**Requires sudo** (bufferbloat phase uses dummynet).
+
+```bash
+bash scripts/05_buffer_sweep.sh
+```
+
+**Runtime:** ~20 minutes.
+
 ### Total data produced
 
 | Script | Rows added | Requires sudo |
@@ -908,7 +939,62 @@ bash scripts/04_emulated_conditions.sh
 | `02_baseline_sweep.sh` | 33 | No |
 | `03_congested_sweep.sh` | 30 | No |
 | `04_emulated_conditions.sh` | 90 | Yes |
-| **Total** | **155** | |
+| `05_buffer_sweep.sh` | 60 | Yes (bufferbloat phase) |
+| **Total** | **215** | |
+
+---
+
+## Step-by-Step: Buffer Size Sweep
+
+### What it measures
+
+This sweep answers a different question than the payload sweep. Instead of
+varying message size, it varies how much kernel memory is reserved for the
+send and receive socket queues (`SO_SNDBUF` and `SO_RCVBUF`).
+
+| Buffer size | What happens |
+|-------------|-------------|
+| 4096 (4KB) | Very small — kernel can queue only ~4 packets at a time; sender stalls frequently |
+| 16384 (16KB) | Small — noticeable throughput reduction vs default |
+| 65536 (64KB) | **Default used in all other scripts** — the baseline reference point |
+| 131072 (128KB) | Large — throughput typically plateaus here |
+| 262144 (256KB) | Very large — beyond the plateau; OWD increases under bufferbloat |
+
+### How to run
+
+1. Confirm the first four scripts have already been run (the buffer sweep is additive — it appends rows).
+2. Confirm dummynet is not already active:
+   ```bash
+   sudo dnctl show   # must return nothing
+   ```
+3. Run the script:
+   ```bash
+   bash scripts/05_buffer_sweep.sh
+   ```
+4. After it finishes, confirm the buffer sizes appear in the CSV:
+   ```bash
+   awk -F',' 'NR>1 && $4=="baseline" {print $3}' results/tcp_results.csv | sort -n | uniq -c
+   # Should show all five buffer sizes
+   ```
+5. Regenerate all plots (analyze.py now generates Plots 6 and 7 from this data):
+   ```bash
+   uv run python src/analyze.py
+   ```
+
+### New plots generated
+
+**Plot 6 — Throughput vs Buffer Size** (`plots/06_throughput_vs_buffer.png`)
+
+Both TCP and UDP throughput at baseline, plotted against socket buffer size.
+Shows the floor (small buffers cause throughput collapse) and the plateau
+(large buffers stop helping).
+
+**Plot 7 — UDP One-Way Delay vs Buffer Size** (`plots/07_owd_vs_buffer.png`)
+
+UDP OWD under both baseline and bufferbloat conditions, plotted against
+SO_RCVBUF. Shows socket-layer bufferbloat: under the 1Mbit/s bufferbloat
+condition, each additional KB of receive buffer adds directly to queuing
+delay — even before the dummynet queue itself fills up.
 
 ---
 
@@ -1343,15 +1429,6 @@ of loopback-based network measurement, and it is why real network research uses
 hardware testbeds or cloud infrastructure for protocol comparisons.
 
 ---
-
-## Files Still to Be Created
-
-| File | Purpose |
-|------|---------|
-| `src/emulate.sh` | Shell script — applies and tears down dummynet conditions by name |
-| `run_experiments.sh` | Loops over all payload × buffer × condition × run combinations |
-
-See `docs/PROJECT_BREAKDOWN.md` for the detailed implementation spec for each.
 
 ---
 

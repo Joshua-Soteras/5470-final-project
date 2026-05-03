@@ -297,6 +297,64 @@ done
 
 ---
 
+## Step 5 — Buffer Size Sweep
+
+**Script:** `scripts/05_buffer_sweep.sh`
+
+**What it does:** Holds payload fixed at 1024B and varies the socket buffer
+size (`SO_SNDBUF` / `SO_RCVBUF`) across five values: 4096, 16384, 65536,
+131072, and 262144 bytes. Runs both protocols under two conditions (baseline
+and bufferbloat), three runs each. Produces 60 rows total.
+
+**Why this is the last script:** Scripts 02–04 always held `buffer_bytes` at
+65536. This script answers the buffer-settings half of the project's stated
+research question: *"how do socket buffer settings affect TCP and UDP
+performance?"* It must run after the other scripts because its data is kept
+separate during analysis (analyze.py filters by `payload_bytes == 1024` when
+aggregating buffer sweep results, and by `buffer_bytes == 65536` for all other
+plots).
+
+**Why baseline + bufferbloat?**
+
+- **baseline**: shows the direct effect of SO_SNDBUF/SO_RCVBUF on throughput
+  and OWD with no other interference. A very small buffer (4KB) limits how many
+  bytes the kernel can queue before blocking the sender, reducing throughput.
+- **bufferbloat**: shows socket-layer bufferbloat. A large SO_RCVBUF under a
+  slow link means packets sit in the socket buffer for a long time before the
+  application reads them, dramatically increasing OWD — even before any
+  network-layer queue fills up.
+
+**Before running:**
+```bash
+# Confirm dummynet is clean (bufferbloat phase uses it)
+sudo dnctl show    # must return nothing
+
+# Confirm all measurement ports are free
+lsof -i :5201 -i :5202 -i :5301 -i :5400
+```
+
+**Run it:**
+```bash
+bash scripts/05_buffer_sweep.sh
+```
+
+**Runtime:** ~20 minutes total (~5 min baseline, ~15 min bufferbloat).
+
+**After it finishes:**
+
+Verify the buffer sizes were recorded correctly:
+```bash
+# Should list all five buffer sizes in baseline rows
+awk -F',' 'NR>1 && $4=="baseline" {print $3}' results/tcp_results.csv | sort -n | uniq -c
+```
+
+Confirm dummynet is torn down:
+```bash
+sudo dnctl show    # must return nothing
+```
+
+---
+
 ## After All Scripts Complete — Final Verification
 
 Run these checks before handing the data to `analyze.py`.
@@ -344,16 +402,17 @@ uv run pytest tests/ -v
 | 2 | `02_baseline_sweep.sh` | 5–8 min | No | 33 |
 | 3 | `03_congested_sweep.sh` | 6–10 min | No | 30 |
 | 4 | `04_emulated_conditions.sh` | 30–45 min | Yes | 90 |
-| **Total** | | **~50–65 min** | | **155** |
+| 5 | `05_buffer_sweep.sh` | ~20 min | Yes (bufferbloat phase) | 60 |
+| **Total** | | **~70–85 min** | | **215** |
 
 ---
 
-## Why four separate scripts?
+## Why five separate scripts?
 
 Each script builds on the previous one. Starting with a smoke test catches
 environment problems early. Starting with baseline gives you a clean control
 group. Running congestion before emulated conditions separates two distinct types
 of interference — software-level (competing traffic) vs. network-level (dummynet
-delay/loss). Running them as one monolithic script would make it harder to debug
-a mid-run failure and harder to re-run a single condition without repeating
-everything.
+delay/loss). The buffer sweep runs last because it uses a different independent
+variable (buffer size) than the first four scripts (payload size), and the data
+is analyzed separately to avoid contaminating the payload-sweep plots.
