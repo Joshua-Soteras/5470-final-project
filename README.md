@@ -931,6 +931,16 @@ bash scripts/05_buffer_sweep.sh
 
 **Runtime:** ~20 minutes.
 
+> **Bug fixed (2026-05-03):** The original version of this script used a single
+> `RATE=500` pps for UDP in both conditions. Under bufferbloat (1Mbit/s cap),
+> 500 pps × 1024B = 4.1 Mbps send rate — 4× the cap — producing ~50% UDP loss
+> instead of the intended ~8%. Script 04 (`04_emulated_conditions.sh`) uses
+> 200 pps for bufferbloat, which sits just above the cap and produces the
+> intended bufferbloat signature. The script now uses `RATE_BASELINE=500` and
+> `RATE_BUFFERBLOAT=200` so both datasets are directly comparable. The 15
+> contaminating rows (buffer-sweep bufferbloat UDP, loss > 20%) were removed
+> from `results/udp_results.csv` before regenerating plots.
+
 ### Total data produced
 
 | Script | Rows added | Requires sudo |

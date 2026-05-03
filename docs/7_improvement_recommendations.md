@@ -9,6 +9,15 @@ Master's-level course. Ordered by impact and effort.
 
 **Implemented in:** `scripts/05_buffer_sweep.sh`, `src/analyze.py` (plots 6 & 7)
 
+**Bug fixed (2026-05-03):** The initial version of `05_buffer_sweep.sh` used
+`RATE=500` pps for UDP under both baseline and bufferbloat. At 500 pps ×
+1024B with a 1Mbit/s cap, UDP dropped ~50% of datagrams — inconsistent with
+script 04's bufferbloat condition (200 pps → ~8% loss). Fixed by splitting into
+`RATE_BASELINE=500` and `RATE_BUFFERBLOAT=200`. Fifteen contaminating UDP rows
+(condition=bufferbloat, payload=1024, loss>20%) were removed from
+`results/udp_results.csv`. Re-run `scripts/05_buffer_sweep.sh` to regenerate
+clean bufferbloat data.
+
 ---
 
 ## ~~Priority 1~~ — Buffer Size Sweep (HIGH IMPACT) — archived description

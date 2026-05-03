@@ -40,7 +40,23 @@ BUFFER_SIZES=(4096 16384 65536 131072 262144)
 # slow; 200 messages keeps per-run time under ~2 minutes.
 MESSAGES_TCP=200
 MESSAGES_UDP=500
-RATE=500    # UDP packets per second
+
+# UDP send rates — MUST match the rates used by the corresponding condition in
+# scripts 02 and 04 so that buffer-sweep data and payload-sweep data are
+# directly comparable when analyze.py aggregates rows from both scripts.
+#
+# baseline:    500 pps — matches 02_baseline_sweep.sh (RATE=500)
+# bufferbloat: 200 pps — matches 04_emulated_conditions.sh (RATE=200)
+#
+# Bug fixed: the original version of this script used RATE=500 for both
+# conditions. At 500 pps with a 1Mbit/s cap, UDP loses ~50% of datagrams
+# (send rate 4× the link capacity). Script 04 uses 200 pps, which sits just
+# above the cap and produces ~8% loss — the intended bufferbloat signature.
+# Using 500 pps here produced results that were inconsistent with script 04
+# and contaminated the payload-sweep bufferbloat cells when both datasets
+# were aggregated together in analyze.py.
+RATE_BASELINE=500
+RATE_BUFFERBLOAT=200
 
 # ── dummynet helpers ──────────────────────────────────────────────────────────
 
@@ -69,7 +85,7 @@ echo "=== Buffer Size Sweep ==="
 echo "Fixed payload: ${PAYLOAD}B"
 echo "Buffer sizes: ${BUFFER_SIZES[*]}"
 echo "Conditions: baseline + bufferbloat"
-echo "TCP messages: ${MESSAGES_TCP} | UDP messages: ${MESSAGES_UDP} | UDP rate: ${RATE} pps"
+echo "TCP messages: ${MESSAGES_TCP} | UDP messages: ${MESSAGES_UDP} | UDP rate baseline: ${RATE_BASELINE} pps / bufferbloat: ${RATE_BUFFERBLOAT} pps"
 echo "Runs per cell: 3"
 echo ""
 
@@ -98,11 +114,11 @@ for buf in "${BUFFER_SIZES[@]}"; do
         completed=$((completed + 1))
         echo "[$completed/$total] UDP | baseline | buffer=${buf}B | run=${run}"
         uv run python src/udp_module.py \
-            --payload  $PAYLOAD      \
-            --buffer   $buf          \
-            --messages $MESSAGES_UDP \
-            --rate     $RATE         \
-            --label    baseline      \
+            --payload  $PAYLOAD         \
+            --buffer   $buf             \
+            --messages $MESSAGES_UDP    \
+            --rate     $RATE_BASELINE   \
+            --label    baseline         \
             --run      $run
         echo ""
     done
@@ -144,11 +160,11 @@ for buf in "${BUFFER_SIZES[@]}"; do
         completed=$((completed + 1))
         echo "[$completed/$total] UDP | bufferbloat | buffer=${buf}B | run=${run}"
         uv run python src/udp_module.py \
-            --payload  $PAYLOAD        \
-            --buffer   $buf            \
-            --messages $MESSAGES_UDP   \
-            --rate     $RATE           \
-            --label    bufferbloat     \
+            --payload  $PAYLOAD           \
+            --buffer   $buf               \
+            --messages $MESSAGES_UDP      \
+            --rate     $RATE_BUFFERBLOAT  \
+            --label    bufferbloat        \
             --run      $run
         echo ""
     done
