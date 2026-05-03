@@ -1702,6 +1702,114 @@ disclosed in any comparison with real-network measurements.
 
 ---
 
+## Limitations and Future Work
+
+Two results in this project warrant explicit acknowledgment: they are not
+measurement errors, but they reflect the fundamental constraints of loopback-based
+network experimentation. Both are defensible and explainable, but a reader
+comparing these results against real-network benchmarks should understand why the
+numbers look the way they do.
+
+---
+
+### Limitation 1 — Congested TCP Exceeds Baseline TCP (Plot 5)
+
+**What was observed:** Under the congested condition (background TCP flood), TCP
+throughput at 16KB payload reached ~11,579 Mbps — significantly higher than the
+baseline's ~7,887 Mbps. AIMD theory predicts congestion should *reduce* throughput,
+not increase it.
+
+**Why this happens on loopback:** AIMD (Additive Increase, Multiplicative Decrease)
+halves the congestion window every time a loss event is detected. On a real network
+with an RTT of 20–100ms, this halving causes a sustained throughput reduction —
+TCP must wait multiple RTTs before the window ramps back up to full size. On
+loopback, RTT is ~0.04ms. TCP detects the loss, halves the window, and ramps back
+to full speed within a single millisecond. Over the entire measurement window of
+hundreds of messages, these micro-backoffs average out to near-baseline or above.
+A secondary effect reinforces this: the background flood keeps the kernel's TCP
+fast path continuously warm. On an otherwise idle loopback, each experiment must
+wake the kernel from a cold state. With the flood running, TCP's memory caches are
+hot and context switches are faster, producing a measured RTT *lower* than baseline
+(~0.04ms vs ~0.07ms).
+
+**Why it was not fixed:** The congested condition was designed to isolate competing
+traffic as the single independent variable — no dummynet, no artificial delay. The
+only way to make AIMD backoff persistent enough to show up in the measurement window
+is to add propagation delay (e.g., 5ms via dummynet), but that conflates two
+variables (congestion + propagation delay) and makes the condition harder to
+interpret scientifically. Changing the experiment design to fix the anomaly would
+undermine the controlled structure of the other conditions.
+
+**What this means for real networks:** The anomaly is loopback-specific. On any
+network with RTT > 1ms, AIMD backoff persists long enough to produce a clear and
+sustained throughput reduction. The TCP congestion control mechanism is correct and
+well-understood — the loopback environment simply cannot sustain the backoff long
+enough to measure it.
+
+**Future work:** Re-running the congested sweep with a small artificial RTT (5ms
+via dummynet) would force AIMD backoff to persist across multiple measurement RTTs
+and produce the expected congested < baseline result. This would be a minimal
+change to the script and would not affect the other conditions.
+
+---
+
+### Limitation 2 — Buffer Sweep Effect is Subtle on Loopback (Plots 6 & 7)
+
+**What was observed:** TCP throughput varies only ~25% across the full 4KB–256KB
+buffer range (1,063–1,334 Mbps), and UDP throughput is flat across the same range.
+The expected result — TCP collapsing at small buffers — did not appear. UDP OWD
+was flat at ~516ms under bufferbloat regardless of SO_RCVBUF, not increasing with
+buffer size as hypothesized.
+
+**Why this happens on loopback:** The buffer-size effect on throughput is governed
+by the **bandwidth-delay product** — the amount of data that must be in flight to
+keep a link fully utilized: `BDP = bandwidth × RTT`. On a 1 Gbps link with 100ms
+RTT, BDP = 12.5 MB. A 4KB send buffer on that link caps throughput at roughly
+`4,096 × 8 / 0.1 = 328 Kbps` — a 99.97% reduction. On loopback, RTT is ~0.09ms.
+BDP = `1,000,000,000 × 0.00009 / 8 ≈ 11,250 bytes`. A 4KB buffer (doubled by
+macOS to ~8KB) already covers this entire window. There is almost no data that
+needs to remain in-flight, so the buffer is never the bottleneck regardless of its
+size.
+
+Two compounding factors eliminate any remaining signal:
+
+1. **macOS silently doubles SO_SNDBUF and SO_RCVBUF.** A `setsockopt` request for
+   4,096 bytes results in an actual kernel allocation of ~8,192 bytes. This is
+   documented macOS kernel behavior — the OS enforces a minimum to preserve POSIX
+   socket semantics. As a result, the true minimum buffer tested was ~8KB, not 4KB.
+
+2. **The receiver drains the socket buffer continuously.** The UDP receiver thread
+   reads immediately upon waking. Under bufferbloat, packets arrive at 1Mbit/s —
+   the receiver always stays ahead of the incoming data. OWD is determined by the
+   dummynet pipe (which sits between the sender and the socket buffer), not by how
+   much data is waiting unread in the buffer itself. Socket-layer bufferbloat only
+   manifests when the *application* is slow to read — not when the *link* is slow
+   to deliver.
+
+**Why it was not fixed:** Demonstrating the full buffer-size effect would require
+running the buffer sweep with an artificial propagation delay. Combining the buffer
+sweep with the high_latency condition (50ms dummynet delay, 100ms RTT) would
+increase BDP to ~12.5MB and make a 4KB buffer severely limiting. This would be a
+meaningful scope expansion: a new condition in `05_buffer_sweep.sh`, additional
+~20 minutes of data collection, and new aggregation logic in `analyze.py`. Given
+the project's stage, this was deferred rather than implemented.
+
+**What this means for real networks:** Socket buffer tuning is a critical
+performance parameter in production systems precisely because real links have RTTs
+measured in milliseconds, not microseconds. Amazon EC2, Google Cloud, and Linux
+kernel defaults all include auto-tuning logic (TCP autotuning, `SO_RCVBUF` hints)
+specifically to address this at scale. The loopback results confirm the mechanism
+exists — they simply cannot demonstrate its magnitude without non-trivial
+propagation delay.
+
+**Future work:** Re-running `05_buffer_sweep.sh` with dummynet's 50ms delay active
+would expose the full buffer-size effect on both throughput and OWD. A 4KB buffer
+under 100ms RTT would cap TCP throughput to ~328 Kbps regardless of link speed,
+and a 256KB buffer would show near-full throughput — a >100× difference vs the
+~25% seen on loopback. For Plot 7, introducing an artificial read delay in the
+receiver thread (e.g., 10ms sleep between reads) would allow packets to accumulate
+in the socket buffer, making OWD grow with SO_RCVBUF as originally hypothesized.
+
 ---
 
 ## Implementation Notes
